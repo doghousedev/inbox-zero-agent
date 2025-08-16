@@ -9,4 +9,6 @@
 	<link rel="icon" href={favicon} />
 </svelte:head>
 
-{@render children?.()}
+<main class="min-h-screen bg-neutral-900 text-neutral-200 font-['Inter']">
+	{@render children?.()}
+</main>
