@@ -8,6 +8,11 @@ export async function generateEmailDraft(
 	email: { subject: string; body: string },
 	tone: 'Professional' | 'Friendly' | 'Brief' | 'Empathetic' = 'Professional'
 ): Promise<GPTParsedDraft> {
+	const model = (import.meta.env.VITE_OPENAI_MODEL as string) || 'gpt-5-nano';
+	type OpenAIChatResponse = {
+		choices?: Array<{ message?: { content?: string } }>;
+		error?: { message?: string };
+	};
 	const prompt = `
 You are a smart email assistant. Here's an email:
 
@@ -37,14 +42,34 @@ Draft: ...
 			Authorization: `Bearer ${import.meta.env.VITE_OPENAI_KEY}`,
 			'Content-Type': 'application/json'
 		},
-		body: JSON.stringify({
-			model: 'gpt-4o',
-			messages: [{ role: 'user', content: prompt }],
-			temperature: 0.5
-		})
+		body: JSON.stringify((() => {
+			const payload: Record<string, unknown> = {
+				model,
+				messages: [{ role: 'user', content: prompt }]
+			};
+			// Some models (e.g. gpt-5-nano) only support default temperature; omit when unsupported
+			const supportsTemperature = !/^gpt-5-nano$/i.test(model);
+			if (supportsTemperature) {
+				const tempEnv = import.meta.env.VITE_OPENAI_TEMPERATURE as string | undefined;
+				const temperature = tempEnv !== undefined ? Number(tempEnv) : 0.5;
+				payload.temperature = temperature;
+			}
+			return payload;
+		})())
 	});
+	let data: OpenAIChatResponse;
+	try {
+		data = (await res.json()) as OpenAIChatResponse;
+	} catch {
+		throw new Error(`OpenAI response was not JSON (status ${res.status})`);
+	}
 
-	const text = await res.json().then((d) => d.choices?.[0]?.message?.content ?? '');
+	if (!res.ok) {
+		const message = data?.error?.message || JSON.stringify(data);
+		throw new Error(`OpenAI error ${res.status}: ${message}`);
+	}
+
+	const text: string = data?.choices?.[0]?.message?.content ?? '';
 
 	const summaryMatch = text.match(/Summary:\s*(.+)/i);
 	const scoreMatch = text.match(/Score:\s*(\d+)/i);

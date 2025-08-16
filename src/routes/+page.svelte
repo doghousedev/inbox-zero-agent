@@ -32,8 +32,17 @@
       };
 
       const selectedTone: Tone = tones[email.id] ?? 'Professional';
-      const parsed = await generateEmailDraft(email, selectedTone);
-      results[email.id] = parsed;
+      try {
+        const parsed = await generateEmailDraft(email, selectedTone);
+        results[email.id] = parsed;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        results[email.id] = {
+          summary: '[Error] Failed to generate',
+          score: 0,
+          draft: message
+        };
+      }
     }
 
     loading = false;
@@ -44,8 +53,13 @@
     regenerating[id] = true;
     results[id] = { summary: 'Thinking...', score: 0, draft: '' };
     const selectedTone: Tone = tones[id] ?? 'Professional';
-    const parsed = await generateEmailDraft(email, selectedTone);
-    results[id] = parsed;
+    try {
+      const parsed = await generateEmailDraft(email, selectedTone);
+      results[id] = parsed;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      results[id] = { summary: '[Error] Failed to generate', score: 0, draft: message };
+    }
     regenerating[id] = false;
   }
 
