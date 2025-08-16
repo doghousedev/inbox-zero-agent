@@ -4,10 +4,10 @@ type GPTParsedDraft = {
 	draft: string;
 };
 
-export async function generateEmailDraft(email: {
-	subject: string;
-	body: string;
-}): Promise<GPTParsedDraft> {
+export async function generateEmailDraft(
+	email: { subject: string; body: string },
+	tone: 'Professional' | 'Friendly' | 'Brief' | 'Empathetic' = 'Professional'
+): Promise<GPTParsedDraft> {
 	const prompt = `
 You are a smart email assistant. Here's an email:
 
@@ -17,7 +17,13 @@ Body: ${email.body}
 Tasks:
 1. Summarize the email in one sentence.
 2. Score its importance from 1 to 10.
-3. Write a polite and professional reply.
+3. Write a reply in a ${tone} tone.
+
+Tone guidance:
+- Professional: formal, clear, courteous.
+- Friendly: warm, approachable, positive.
+- Brief: very concise, minimum words, keep essentials only.
+- Empathetic: validating, supportive, considerate.
 
 Return the output in this format:
 Summary: ...

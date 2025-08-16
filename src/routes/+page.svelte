@@ -8,8 +8,17 @@
     draft: string;
   };
 
+  type Tone = 'Professional' | 'Friendly' | 'Brief' | 'Empathetic';
+
   let results: Record<string, EmailDraft> = {};
+  let tones: Record<string, Tone> = {};
   let loading = false;
+  let regenerating: Record<string, boolean> = {};
+
+  // Initialize default tones to 'Professional'
+  if (Object.keys(tones).length === 0) {
+    for (const e of mockEmails) tones[e.id] = 'Professional';
+  }
 
   async function runTriage() {
     loading = true;
@@ -22,11 +31,22 @@
         draft: ''
       };
 
-      const parsed = await generateEmailDraft(email);
+      const selectedTone: Tone = tones[email.id] ?? 'Professional';
+      const parsed = await generateEmailDraft(email, selectedTone);
       results[email.id] = parsed;
     }
 
     loading = false;
+  }
+
+  async function regenerate(email: { id: string; subject: string; body: string }) {
+    const id = email.id;
+    regenerating[id] = true;
+    results[id] = { summary: 'Thinking...', score: 0, draft: '' };
+    const selectedTone: Tone = tones[id] ?? 'Professional';
+    const parsed = await generateEmailDraft(email, selectedTone);
+    results[id] = parsed;
+    regenerating[id] = false;
   }
 
   $: rankedEmails = [...mockEmails]
@@ -53,6 +73,23 @@
     >
       <h2 class="text-lg font-semibold">{email.subject}</h2>
       <p><strong>From:</strong> {email.sender}</p>
+      <div class="mt-2 flex items-center gap-2">
+        <label class="text-sm text-neutral-300">Tone:</label>
+        <select
+          class="bg-neutral-900 border border-neutral-700 rounded px-2 py-1 text-sm"
+          bind:value={tones[email.id]}
+          on:change={() => regenerate(email)}
+          disabled={regenerating[email.id] || loading}
+        >
+          <option value="Professional">Professional</option>
+          <option value="Friendly">Friendly</option>
+          <option value="Brief">Brief</option>
+          <option value="Empathetic">Empathetic</option>
+        </select>
+        {#if regenerating[email.id]}
+          <span class="text-xs text-neutral-400">Regenerating…</span>
+        {/if}
+      </div>
       <p><strong>Summary:</strong> {results[email.id].summary}</p>
       <p><strong>Score:</strong> {results[email.id].score}</p>
       {#if i < 3}
