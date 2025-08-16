@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Per-email "Triage" button on each email card to triage a single item with the selected Model and Tone.
 - `TRIAGE_MODELS` and model override support in `generateEmailDraft()` within `src/lib/gpt.ts`.
 - `generateEmailDraftMulti()` in `src/lib/gpt.ts` (not currently used by the UI) to support future multi-model comparisons.
+- Loading spinner icon next to the "Thinking..." summary state in `src/routes/+page.svelte`.
 
 ### Changed
 - Global "Triage My Inbox" button kept for batch processing; UI updated to work with the selected Model.
