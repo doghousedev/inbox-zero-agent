@@ -4,11 +4,25 @@ type GPTParsedDraft = {
 	draft: string;
 };
 
+export type TriageModel = {
+  id: string; // API model id
+  label: string; // UI label
+};
+
+// Built-in set used for comparison mode
+export const TRIAGE_MODELS: TriageModel[] = [
+  { id: 'gpt-5', label: 'GPT-5' },
+  { id: 'gpt-5-mini', label: 'GPT-5-mini' },
+  { id: 'gpt-5-nano', label: 'GPT-5-nano' },
+  { id: 'gpt-4o', label: 'GPT-4o' }
+];
+
 export async function generateEmailDraft(
 	email: { subject: string; body: string },
-	tone: 'Professional' | 'Friendly' | 'Brief' | 'Empathetic' = 'Professional'
+	tone: 'Professional' | 'Friendly' | 'Brief' | 'Empathetic' = 'Professional',
+	modelOverride?: string
 ): Promise<GPTParsedDraft> {
-	const model = (import.meta.env.VITE_OPENAI_MODEL as string) || 'gpt-5-nano';
+	const model = modelOverride || ((import.meta.env.VITE_OPENAI_MODEL as string) || 'gpt-5-nano');
 	type OpenAIChatResponse = {
 		choices?: Array<{ message?: { content?: string } }>;
 		error?: { message?: string };
@@ -47,8 +61,8 @@ Draft: ...
 				model,
 				messages: [{ role: 'user', content: prompt }]
 			};
-			// Some models (e.g. gpt-5-nano) only support default temperature; omit when unsupported
-			const supportsTemperature = !/^gpt-5-nano$/i.test(model);
+			// Some gpt-5 variants only support default temperature; omit when unsupported
+			const supportsTemperature = !/^gpt-5-/i.test(model);
 			if (supportsTemperature) {
 				const tempEnv = import.meta.env.VITE_OPENAI_TEMPERATURE as string | undefined;
 				const temperature = tempEnv !== undefined ? Number(tempEnv) : 0.5;
@@ -81,3 +95,27 @@ Draft: ...
 		draft: draftMatch?.[1]?.trim() ?? '[No draft]'
 	};
 }
+
+export async function generateEmailDraftMulti(
+  email: { subject: string; body: string },
+  tone: 'Professional' | 'Friendly' | 'Brief' | 'Empathetic' = 'Professional',
+  models: string[] = TRIAGE_MODELS.map((m) => m.id)
+): Promise<Record<string, GPTParsedDraft>> {
+  const settled = await Promise.allSettled(
+    models.map((m) => generateEmailDraft(email, tone, m).then((r) => ({ model: m, result: r })))
+  );
+  const out: Record<string, GPTParsedDraft> = {};
+  for (const s of settled) {
+    if (s.status === 'fulfilled') {
+      out[s.value.model] = s.value.result;
+    } else {
+      const reason = (s as PromiseRejectedResult).reason;
+      const msg = reason instanceof Error ? reason.message : String(reason);
+      // We cannot reliably know which model failed here; skip adding or tag generically
+      // For visibility, we add a placeholder under a synthetic key
+      out['error'] = { summary: '[Error] Failed to generate', score: 0, draft: msg };
+    }
+  }
+  return out;
+}
+
