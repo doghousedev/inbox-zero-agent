@@ -30,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - PKCE base64url encoding in `src/lib/oauth/pkce.ts` now uses `Buffer.from(Uint8Array)` to avoid binary string conversion issues that could break `code_challenge` generation and lead to `invalid_grant`.
  - Moved final redirect in `src/routes/auth/callback/+server.ts` outside try/catch to avoid swallowing redirects as errors.
  - Removed mock inbox usage from `src/routes/+page.svelte`; UI now exclusively uses live Gmail data (`/api/gmail/messages`).
+ - Decoded HTML entities and RFC 2047 headers in `src/routes/api/gmail/messages/+server.ts` so Subject/From/snippets/body render correctly (e.g., apostrophes, accented characters).
 
 ### Notes
 - Ensure `VITE_OPENAI_KEY` is set; optionally configure default model via `VITE_OPENAI_MODEL`. Temperature can be set via `VITE_OPENAI_TEMPERATURE` (omitted for some `gpt-5-*` variants).

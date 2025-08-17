@@ -108,6 +108,53 @@ export const GET: RequestHandler = async (event) => {
       return html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
     }
 
+    function decodeHtmlEntities(input: string): string {
+      if (!input) return input;
+      // Handle a few common named entities and numeric entities
+      const named: Record<string, string> = {
+        amp: '&',
+        lt: '<',
+        gt: '>',
+        quot: '"',
+        apos: "'"
+      };
+      return input.replace(/&(#x?[0-9a-fA-F]+|[a-zA-Z]+);/g, (match, code) => {
+        if (code[0] === '#') {
+          // Numeric
+          const hex = code[1].toLowerCase() === 'x';
+          const num = parseInt(code.slice(hex ? 2 : 1), hex ? 16 : 10);
+          if (!Number.isNaN(num)) return String.fromCodePoint(num);
+          return match;
+        } else {
+          // Named
+          const k = code as keyof typeof named;
+          return named[k] ?? match;
+        }
+      });
+    }
+
+    // Decode RFC 2047 encoded-words in headers like =?UTF-8?B?...?= or =?UTF-8?Q?...?=
+    function decodeRfc2047(input: string | undefined): string {
+      if (!input) return '';
+      return input.replace(/=\?([^?]+)\?(B|Q)\?([^?]+)\?=/gi, (_m, _charset: string, enc: string, text: string) => {
+        try {
+          let decoded = '';
+          if (enc.toUpperCase() === 'B') {
+            const b = Buffer.from(text, 'base64');
+            decoded = b.toString('utf8');
+          } else {
+            // Q-encoding: underscores represent spaces, =HH hex
+            const q = text.replace(/_/g, ' ').replace(/=([0-9a-fA-F]{2})/g, (_s, h) => String.fromCharCode(parseInt(h, 16)));
+            decoded = q;
+          }
+          // We only output UTF-8; assume utf-8 input or let Node handle conversion
+          return decoded;
+        } catch {
+          return input;
+        }
+      });
+    }
+
     const details = await Promise.all(
       ids.map(async (id) => {
         const mRes = await fetch(
@@ -121,13 +168,13 @@ export const GET: RequestHandler = async (event) => {
         const m = (await mRes.json()) as GmailMessage;
         const headers: Record<string, string> = {};
         for (const h of m.payload?.headers ?? []) headers[h.name] = h.value;
-        const bodyText = extractPlainText(m.payload);
+        const bodyText = decodeHtmlEntities(extractPlainText(m.payload));
         return {
           id: m.id,
           threadId: m.threadId,
-          snippet: m.snippet,
-          subject: headers['Subject'] || '',
-          from: headers['From'] || '',
+          snippet: decodeHtmlEntities(m.snippet),
+          subject: decodeHtmlEntities(decodeRfc2047(headers['Subject'] || '')),
+          from: decodeHtmlEntities(decodeRfc2047(headers['From'] || '')),
           date: headers['Date'] || '',
           bodyText
         };
