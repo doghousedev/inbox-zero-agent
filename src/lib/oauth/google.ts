@@ -78,3 +78,27 @@ export async function exchangeCodeForTokens(args: {
   }
   return (await res.json()) as TokenResponse;
 }
+
+export async function refreshAccessToken(args: {
+  refresh_token: string;
+}): Promise<TokenResponse> {
+  if (!GOOGLE_CLIENT_ID) throw new Error('Missing GOOGLE_CLIENT_ID');
+  if (!GOOGLE_CLIENT_SECRET) throw new Error('Missing GOOGLE_CLIENT_SECRET');
+  const body = new URLSearchParams({
+    client_id: GOOGLE_CLIENT_ID,
+    client_secret: GOOGLE_CLIENT_SECRET,
+    grant_type: 'refresh_token',
+    refresh_token: args.refresh_token
+  });
+
+  const res = await fetch(GOOGLE_TOKEN_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Google token refresh failed (${res.status}): ${text}`);
+  }
+  return (await res.json()) as TokenResponse;
+}

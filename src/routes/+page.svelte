@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { mockEmails } from '$lib/mockEmails';
   import { generateEmailDraft, TRIAGE_MODELS } from '$lib/gpt';
 
@@ -17,6 +18,45 @@
   let collapsed: Record<string, boolean> = {};
   let orderedEmails = [...mockEmails];
   let selectedModel: string = (import.meta.env.VITE_OPENAI_MODEL as string) || 'gpt-5-nano';
+
+  // Auth/session data from server
+  let signedInEmail: string | null = null;
+  let gmailItems: Array<{ id: string; subject: string; from: string; date: string; snippet: string }>|null = null;
+  let gmailError: string | null = null;
+
+  async function fetchProfile() {
+    try {
+      const res = await fetch('/api/gmail/profile');
+      if (!res.ok) return;
+      const data = await res.json();
+      signedInEmail = data.emailAddress || null;
+    } catch {}
+  }
+
+  async function fetchMessages() {
+    try {
+      const res = await fetch('/api/gmail/messages');
+      if (!res.ok) {
+        gmailError = `Messages request failed (${res.status})`;
+        return;
+      }
+      const data = await res.json();
+      gmailItems = (data.items || []).map((m: any) => ({
+        id: m.id,
+        subject: m.subject || '',
+        from: m.from || '',
+        date: m.date || '',
+        snippet: m.snippet || ''
+      }));
+    } catch (e) {
+      gmailError = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  onMount(async () => {
+    await fetchProfile();
+    await fetchMessages();
+  });
 
   // Initialize default tones to 'Professional'
   if (Object.keys(tones).length === 0) {
@@ -77,6 +117,21 @@
   <h1 class="text-2xl mb-4 text-sky-300">📬 Inbox Zero Agent</h1>
 
   <div class="flex items-center gap-4 flex-wrap">
+    <a
+      href="/auth/login"
+      class="bg-blue-600 text-white border border-blue-500 px-4 py-2 rounded-md font-bold hover:bg-blue-500"
+      aria-label="Login with Google"
+    >
+      Login with Google
+    </a>
+    {#if signedInEmail}
+      <span class="text-sm text-neutral-300">Signed in as <strong>{signedInEmail}</strong></span>
+      <a
+        href="/auth/logout"
+        class="bg-red-600 text-white border border-red-500 px-3 py-2 rounded-md font-semibold hover:bg-red-500"
+        aria-label="Logout"
+      >Logout</a>
+    {/if}
     <button
       class="bg-neutral-800 text-white border border-neutral-600 px-4 py-2 rounded-md font-bold disabled:opacity-50 disabled:cursor-wait hover:enabled:bg-neutral-700"
       on:click={runTriage}
@@ -96,6 +151,30 @@
         {/each}
       </select>
     </div>
+
+  {#if gmailItems}
+    <section class="mt-6">
+      <h2 class="text-xl mb-2">Latest Gmail (25)</h2>
+      {#if gmailItems.length === 0}
+        <p class="text-neutral-400">No messages.</p>
+      {:else}
+        <ul class="space-y-2">
+          {#each gmailItems as m}
+            <li class="p-3 rounded-md border border-neutral-700">
+              <div class="flex flex-wrap justify-between gap-2">
+                <div class="font-semibold">{m.subject}</div>
+                <div class="text-xs text-neutral-400">{m.date}</div>
+              </div>
+              <div class="text-sm text-neutral-300">From: {m.from}</div>
+              <div class="text-sm text-neutral-400 mt-1">{m.snippet}</div>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+    </section>
+  {:else if gmailError}
+    <p class="text-red-400 mt-4">{gmailError}</p>
+  {/if}
   </div>
 
   {#each orderedEmails as email, i}
