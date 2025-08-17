@@ -41,20 +41,77 @@ export const GET: RequestHandler = async (event) => {
     const listJson = (await listRes.json()) as { messages?: Array<{ id: string; threadId: string }>; nextPageToken?: string };
     const ids = listJson.messages?.map((m) => m.id) ?? [];
 
-    // Fetch minimal details for each message
+    // Fetch details for each message (format=full) and extract plain text body
     type GmailMessage = {
       id: string;
       threadId: string;
       snippet: string;
-      payload?: {
-        headers?: Array<{ name: string; value: string }>;
-      };
+      payload?: GmailPayload;
     };
+
+    type GmailPayload = {
+      mimeType?: string;
+      body?: { size?: number; data?: string };
+      parts?: GmailPayload[];
+      headers?: Array<{ name: string; value: string }>;
+    };
+
+    function decodeBase64Url(b64url: string | undefined): string {
+      if (!b64url) return '';
+      const b64 = b64url.replace(/-/g, '+').replace(/_/g, '/');
+      const buff = Buffer.from(b64, 'base64');
+      return buff.toString('utf8');
+    }
+
+    function extractPlainText(payload?: GmailPayload): string {
+      if (!payload) return '';
+      // If this node is text/plain with data
+      if (payload.mimeType === 'text/plain' && payload.body?.data) {
+        return decodeBase64Url(payload.body.data);
+      }
+      // If multipart, search parts preferring text/plain, else fallback to text/html
+      if (payload.parts && payload.parts.length) {
+        // prefer text/plain
+        for (const p of payload.parts) {
+          const t = extractPlainText(p);
+          if (t) return t;
+        }
+        // fallback: find html and strip tags
+        for (const p of payload.parts) {
+          const html = extractHtml(p);
+          if (html) return stripHtml(html);
+        }
+      }
+      // Single-part html
+      const html = extractHtml(payload);
+      if (html) return stripHtml(html);
+      // Last resort: decode body
+      if (payload.body?.data) return decodeBase64Url(payload.body.data);
+      return '';
+    }
+
+    function extractHtml(payload?: GmailPayload): string {
+      if (!payload) return '';
+      if (payload.mimeType === 'text/html' && payload.body?.data) {
+        return decodeBase64Url(payload.body.data);
+      }
+      if (payload.parts) {
+        for (const p of payload.parts) {
+          const html = extractHtml(p);
+          if (html) return html;
+        }
+      }
+      return '';
+    }
+
+    function stripHtml(html: string): string {
+      return html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+    }
 
     const details = await Promise.all(
       ids.map(async (id) => {
         const mRes = await fetch(
-          `https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Date`,
+          `https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}?format=full`,
           { headers: { Authorization: `Bearer ${accessToken}` } }
         );
         if (!mRes.ok) {
@@ -64,13 +121,15 @@ export const GET: RequestHandler = async (event) => {
         const m = (await mRes.json()) as GmailMessage;
         const headers: Record<string, string> = {};
         for (const h of m.payload?.headers ?? []) headers[h.name] = h.value;
+        const bodyText = extractPlainText(m.payload);
         return {
           id: m.id,
           threadId: m.threadId,
           snippet: m.snippet,
           subject: headers['Subject'] || '',
           from: headers['From'] || '',
-          date: headers['Date'] || ''
+          date: headers['Date'] || '',
+          bodyText
         };
       })
     );
