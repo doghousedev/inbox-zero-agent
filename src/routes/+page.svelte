@@ -26,7 +26,7 @@
   let gmailItems: Array<GmailListItem>|null = null;
   let gmailError: string | null = null;
   let categoryFilter: 'All' | 'Important' | 'Low Priority' | 'Promotional' | 'Spam' | 'Subscription' = 'All';
-  let groupBy: 'none' | 'subject' | 'thread' | 'sender' = 'thread';
+  let groupBy: 'none' | 'subject' | 'thread' | 'sender' = 'none';
   // Holds groups for current derived view: repId -> items in group
   let currentGroupMap: Record<string, GmailListItem[]> = {};
 
@@ -198,7 +198,15 @@
   }
   // Compute once per tick to keep currentGroupMap/groupCounts consistent during render
   let derivedItems: GmailListItem[] = [];
-  $: derivedItems = deriveItems();
+  // Make dependencies explicit so Svelte surely tracks them
+  $: {
+    // Short-circuit: if no grouping and filter is All, just show gmailItems
+    if (gmailItems && groupBy === 'none' && categoryFilter === 'All') {
+      derivedItems = gmailItems.slice();
+    } else {
+      derivedItems = deriveItems();
+    }
+  }
 
   function groupParticipants(repId: string): string {
     const arr = currentGroupMap[repId] || [];
@@ -322,6 +330,7 @@
   {#if gmailItems}
     <section class="mt-6">
       <h2 class="text-xl mb-2">Latest Gmail (25)</h2>
+      <p class="text-xs text-neutral-500">Loaded: {gmailItems.length} • Showing: {derivedItems.length} • Filter: {categoryFilter} • Group: {groupBy}</p>
       {#if gmailItems.length === 0}
         <p class="text-neutral-400">No messages.</p>
       {:else}
@@ -424,6 +433,16 @@
                       </li>
                     {/each}
                   </ul>
+        {#if gmailItems.length > 0 && derivedItems.length === 0}
+          <div class="mt-2">
+            <p class="text-xs text-amber-400">Showing fallback list (filter/group yielded 0). This will be hidden once the pipeline yields items.</p>
+            <ul class="mt-1 space-y-1">
+              {#each gmailItems as gm}
+                <li class="text-sm text-neutral-300">{gm.subject} <span class="text-xs text-neutral-500">— {gm.from}</span></li>
+              {/each}
+            </ul>
+          </div>
+        {/if}
                 {/if}
               {:else}
                 <!-- Single-message (not grouped) content -->
