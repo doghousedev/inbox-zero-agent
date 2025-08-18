@@ -12,6 +12,7 @@
 
   let results: Record<string, EmailDraft> = {};
   let tones: Record<string, Tone> = {};
+  let defaultTone: Tone = 'Professional';
   let loading = false;
   let regenerating: Record<string, boolean> = {};
   let collapsed: Record<string, boolean> = {};
@@ -36,7 +37,7 @@
   async function regenerateGmail(item: GmailListItem) {
     const id = item.id;
     regenerating[id] = true;
-    const selectedTone: Tone = tones[id] ?? 'Professional';
+    const selectedTone: Tone = tones[id] ?? defaultTone;
     try {
       results[id] = { summary: 'Thinking...', score: 0, draft: '' };
       const parsed = await generateEmailDraft(
@@ -58,7 +59,7 @@
     results = {};
     for (const item of gmailItems) {
       results[item.id] = { summary: 'Thinking...', score: 0, draft: '' };
-      const selectedTone: Tone = tones[item.id] ?? 'Professional';
+      const selectedTone: Tone = tones[item.id] ?? defaultTone;
       try {
         const parsed = await generateEmailDraft(
           { subject: item.subject, body: (item as any).bodyText || item.snippet },
@@ -90,9 +91,8 @@
         snippet: m.snippet || '',
         bodyText: m.bodyText || ''
       }));
-      // Initialize tones/collapsed defaults for Gmail items
+      // Initialize collapsed defaults for Gmail items (tone falls back to defaultTone)
       for (const m of gmailItems) {
-        if (!tones[m.id]) tones[m.id] = 'Professional';
         if (collapsed[m.id] === undefined) collapsed[m.id] = true;
       }
     } catch (e) {
@@ -146,6 +146,20 @@
         {/each}
       </select>
     </div>
+    <div class="flex items-center gap-2">
+      <label class="text-sm text-neutral-300">Default Tone:</label>
+      <select
+        class="bg-neutral-900 border border-neutral-700 rounded px-2 py-1 text-sm"
+        bind:value={defaultTone}
+        disabled={loading}
+        aria-label="Default tone for triage"
+      >
+        <option value="Professional">Professional</option>
+        <option value="Friendly">Friendly</option>
+        <option value="Brief">Brief</option>
+        <option value="Empathetic">Empathetic</option>
+      </select>
+    </div>
 
   {#if gmailItems}
     <section class="mt-6">
@@ -170,8 +184,8 @@
                   <label class="text-sm text-neutral-300">Tone:</label>
                   <select
                     class="bg-neutral-900 border border-neutral-700 rounded px-2 py-1 text-sm"
-                    bind:value={tones[m.id]}
-                    on:change={() => regenerateGmail(m)}
+                    value={tones[m.id] ?? defaultTone}
+                    on:change={(e) => { tones[m.id] = (e.target as HTMLSelectElement).value as Tone; regenerateGmail(m); }}
                     disabled={regenerating[m.id] || loading}
                   >
                     <option value="Professional">Professional</option>
