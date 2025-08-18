@@ -349,17 +349,41 @@
           {#each derivedItems as m, i}
             <li class="p-3 rounded-md border border-neutral-700">
               <!-- Header row: Gmail-like conversation summary -->
-              <div class="flex items-center gap-2 cursor-pointer" on:click={() => (collapsed[m.id + '_thread'] = !(collapsed[m.id + '_thread'] ?? true))}>
+              <div
+                class="flex items-center gap-2 cursor-pointer rounded-md px-1"
+                class:bg-neutral-800={(groupBy !== 'none' && groupCounts[m.id] > 1 && !(collapsed[m.id + '_thread'] ?? true)) || (groupBy === 'none' && !collapsed[m.id])}
+                class:border={(groupBy !== 'none' && groupCounts[m.id] > 1 && !(collapsed[m.id + '_thread'] ?? true)) || (groupBy === 'none' && !collapsed[m.id])}
+                class:border-sky-700={(groupBy !== 'none' && groupCounts[m.id] > 1 && !(collapsed[m.id + '_thread'] ?? true)) || (groupBy === 'none' && !collapsed[m.id])}
+                on:click={() => {
+                  if (groupBy !== 'none' && groupCounts[m.id] > 1) {
+                    collapsed[m.id + '_thread'] = !(collapsed[m.id + '_thread'] ?? true);
+                  } else {
+                    collapsed[m.id] = !collapsed[m.id];
+                  }
+                }}
+                aria-expanded={((groupBy !== 'none' && groupCounts[m.id] > 1 && !(collapsed[m.id + '_thread'] ?? true)) || (groupBy === 'none' && !collapsed[m.id])) ? 'true' : 'false'}
+                title={'Toggle ' + ((groupBy !== 'none' && groupCounts[m.id] > 1) ? 'thread' : 'message')}
+              >
+                <svg class="h-4 w-4 text-neutral-300 transition-transform"
+                    class:rotate-90={(groupBy !== 'none' && groupCounts[m.id] > 1) ? !(collapsed[m.id + '_thread'] ?? true) : !collapsed[m.id]}
+                    xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                  <path fill-rule="evenodd" d="M7.21 14.77a.75.75 0 0 1-1.06-1.06L10.06 9.8 6.15 5.89a.75.75 0 1 1 1.06-1.06l4.5 4.5a.75.75 0 0 1 0 1.06l-4.5 4.5Z" clip-rule="evenodd" />
+                </svg>
                 <div class="flex-1 min-w-48">
                   <div class="font-semibold">{m.subject}</div>
                   {#if groupBy !== 'none' && groupCounts[m.id] > 1}
                     <div class="text-xs text-neutral-400 truncate">
                       {groupParticipants(m.id)} — {latestInGroup(m.id)?.snippet}
                     </div>
+                  {:else}
+                    <div class="text-xs text-neutral-400 truncate">{m.snippet}</div>
                   {/if}
                 </div>
                 {#if groupBy !== 'none' && groupCounts[m.id] > 1}
                   <span class="text-xs rounded px-2 py-1 border border-neutral-600 text-neutral-300">x{groupCounts[m.id]}</span>
+                  {#if !(collapsed[m.id + '_thread'] ?? true)}
+                    <span class="text-[10px] rounded px-1.5 py-0.5 border border-sky-700 text-sky-300">Open</span>
+                  {/if}
                 {/if}
                 {#if results[m.id]?.category}
                   <span class="text-xs rounded px-2 py-1 text-white"
@@ -445,7 +469,7 @@
         {/if}
                 {/if}
               {:else}
-                <!-- Single-message (not grouped) content -->
+                <!-- Single-message (not grouped) expanded content -->
                 <div class="text-sm text-neutral-300">From: {m.from}</div>
                 <div class="text-xs text-neutral-400">{m.date}</div>
                 <div class="text-sm text-neutral-400 mt-1">{m.snippet}</div>
@@ -470,10 +494,6 @@
                     on:click={() => regenerateGmail(m)}
                     disabled={regenerating[m.id] || loading}
                   >Triage</button>
-                  <button
-                    class="ml-auto bg-neutral-800 text-white border border-neutral-600 px-2 py-1 rounded text-sm hover:enabled:bg-neutral-700"
-                    on:click={() => (collapsed[m.id] = !collapsed[m.id])}
-                  >{collapsed[m.id] ? 'Expand' : 'Collapse'}</button>
                 </div>
                 {#if !collapsed[m.id]}
                   <div class="mt-3 space-y-2">
