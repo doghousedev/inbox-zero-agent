@@ -26,7 +26,7 @@
   let gmailItems: Array<GmailListItem>|null = null;
   let gmailError: string | null = null;
   let categoryFilter: 'All' | 'Important' | 'Low Priority' | 'Promotional' | 'Spam' | 'Subscription' = 'All';
-  let groupBy: 'none' | 'subject' | 'thread' = 'thread';
+  let groupBy: 'none' | 'subject' | 'thread' | 'sender' = 'thread';
   // Holds groups for current derived view: repId -> items in group
   let currentGroupMap: Record<string, GmailListItem[]> = {};
 
@@ -113,7 +113,7 @@
     // restore groupBy preference
     try {
       const gb = localStorage.getItem('groupBy');
-      if (gb === 'none' || gb === 'subject' || gb === 'thread') groupBy = gb;
+      if (gb === 'none' || gb === 'subject' || gb === 'thread' || gb === 'sender') groupBy = gb as any;
     } catch {}
     await fetchProfile();
     await fetchMessages();
@@ -131,6 +131,15 @@
     while (prefix.test(s)) s = s.replace(prefix, '');
     return s.replace(/\s+/g, ' ').trim().toLowerCase();
   }
+  function normalizeSender(from: string): string {
+    if (!from) return '';
+    // try to extract email inside <...>
+    const m = from.match(/<([^>]+)>/);
+    const email = (m ? m[1] : from).trim().toLowerCase();
+    // prefer domain grouping to cluster newsletters from same domain
+    const at = email.lastIndexOf('@');
+    return at !== -1 ? email.slice(at + 1) : email;
+  }
 
   // Derived view: optionally group, filter by category, then sort by score desc
   const groupCounts: Record<string, number> = {};
@@ -142,7 +151,10 @@
     if (groupBy !== 'none') {
       const map = new Map<string, GmailListItem[]>();
       for (const m of items) {
-        const key = groupBy === 'thread' && m.threadId ? m.threadId : normalizeSubject(m.subject);
+        let key: string;
+        if (groupBy === 'thread') key = m.threadId || normalizeSubject(m.subject);
+        else if (groupBy === 'subject') key = normalizeSubject(m.subject);
+        else /* sender */ key = normalizeSender(m.from);
         const arr = map.get(key) || [];
         arr.push(m);
         map.set(key, arr);
@@ -184,6 +196,9 @@
     }
     return items;
   }
+  // Compute once per tick to keep currentGroupMap/groupCounts consistent during render
+  let derivedItems: GmailListItem[] = [];
+  $: derivedItems = deriveItems();
 
   function groupParticipants(repId: string): string {
     const arr = currentGroupMap[repId] || [];
@@ -221,7 +236,7 @@
   }
 </script>
 
-<main class="p-8 max-w-4xl mx-auto">
+<main class="p-8 mx-0 w-full">
   <h1 class="text-2xl mb-4 text-sky-300">📬 Inbox Zero Agent</h1>
 
   <div class="flex items-center gap-4 flex-wrap">
@@ -286,6 +301,7 @@
         <option value="none">None</option>
         <option value="subject">Subject</option>
         <option value="thread">Thread</option>
+        <option value="sender">Sender</option>
       </select>
     </div>
     <div class="flex items-center gap-2">
@@ -316,8 +332,12 @@
             disabled={loading}
           >{loading ? 'Working...' : 'Triage All (Gmail)'}</button>
         </div>
+        <!-- Summary of grouping when active -->
+        {#if groupBy !== 'none'}
+          <p class="text-xs text-neutral-400 mb-1">Grouped {gmailItems.length} messages into {Object.keys(currentGroupMap).length || derivedItems.length} groups (by {groupBy}).</p>
+        {/if}
         <ul class="space-y-2">
-          {#each deriveItems() as m, i}
+          {#each derivedItems as m, i}
             <li class="p-3 rounded-md border border-neutral-700">
               <!-- Header row: Gmail-like conversation summary -->
               <div class="flex items-center gap-2 cursor-pointer" on:click={() => (collapsed[m.id + '_thread'] = !(collapsed[m.id + '_thread'] ?? true))}>
