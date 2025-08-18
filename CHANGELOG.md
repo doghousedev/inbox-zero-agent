@@ -23,6 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `GET /auth/logout` in `src/routes/auth/logout/+server.ts` (clear session and cookie).
   - "Login with Google" link button on home page `src/routes/+page.svelte`.
   - `GET /api/gmail/messages` in `src/routes/api/gmail/messages/+server.ts` (list newest 25 messages with Subject/From/Date/snippet; auto-refresh token).
+  - New Gmail modify proxy `POST /api/gmail/modify` in `src/routes/api/gmail/modify/+server.ts` to securely apply label changes.
+  - Optional inbox grouping in `src/routes/+page.svelte` with a "Group by" selector:
+    - Group by Subject (ignores common reply/forward prefixes)
+    - Group by Thread (uses Gmail `threadId`)
+    - Shows a count badge on grouped cards and chooses representative by highest triage score
   - Home page now shows signed-in email and lists latest Gmail messages; includes Logout button.
 
 ### Changed
@@ -33,6 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
  - Decoded HTML entities and RFC 2047 headers in `src/routes/api/gmail/messages/+server.ts` so Subject/From/snippets/body render correctly (e.g., apostrophes, accented characters).
  - Added global Default Tone selector in `src/routes/+page.svelte`; triage now uses per-message override or falls back to the global default.
 - Inbox view can be filtered by Category and is sorted by triage Score (desc). Category badges are shown per email. After triage, low-score Spam/Promotional emails are auto-moved to Trash via the new modify API.
+ - Messages can now be displayed as groups (Subject/Thread) while keeping category filters and score-based sorting applied to group representatives.
 
 ### Notes
 - Ensure `VITE_OPENAI_KEY` is set; optionally configure default model via `VITE_OPENAI_MODEL`. Temperature can be set via `VITE_OPENAI_TEMPERATURE` (omitted for some `gpt-5-*` variants).

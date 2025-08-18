@@ -21,11 +21,14 @@
   let selectedModel: string = (import.meta.env.VITE_OPENAI_MODEL as string) || 'gpt-5-nano';
 
   // Auth/session data from server
-  type GmailListItem = { id: string; subject: string; from: string; date: string; snippet: string; bodyText?: string; unsubscribeUrl?: string };
+  type GmailListItem = { id: string; threadId?: string; subject: string; from: string; date: string; snippet: string; bodyText?: string; unsubscribeUrl?: string };
   let signedInEmail: string | null = null;
   let gmailItems: Array<GmailListItem>|null = null;
   let gmailError: string | null = null;
   let categoryFilter: 'All' | 'Important' | 'Low Priority' | 'Promotional' | 'Spam' | 'Subscription' = 'All';
+  let groupBy: 'none' | 'subject' | 'thread' = 'thread';
+  // Holds groups for current derived view: repId -> items in group
+  let currentGroupMap: Record<string, GmailListItem[]> = {};
 
   async function fetchProfile() {
     try {
@@ -89,6 +92,7 @@
       const data = await res.json();
       gmailItems = (data.items || []).map((m: any) => ({
         id: m.id,
+        threadId: m.threadId,
         subject: m.subject || '',
         from: m.from || '',
         date: m.date || '',
@@ -106,18 +110,96 @@
   }
 
   onMount(async () => {
+    // restore groupBy preference
+    try {
+      const gb = localStorage.getItem('groupBy');
+      if (gb === 'none' || gb === 'subject' || gb === 'thread') groupBy = gb;
+    } catch {}
     await fetchProfile();
     await fetchMessages();
   });
 
-  // Derived view: filter by category (if results exist), then sort by score desc
+  $: (() => {
+    try { localStorage.setItem('groupBy', groupBy); } catch {}
+  })();
+
+  // Normalize subjects to group similar threads ignoring reply/forward prefixes
+  function normalizeSubject(subj: string): string {
+    if (!subj) return '';
+    let s = subj.trim();
+    const prefix = /^(re|fw|fwd|sv|aw|antwort|rv|res|tr):\s*/i;
+    while (prefix.test(s)) s = s.replace(prefix, '');
+    return s.replace(/\s+/g, ' ').trim().toLowerCase();
+  }
+
+  // Derived view: optionally group, filter by category, then sort by score desc
+  const groupCounts: Record<string, number> = {};
+  function parseDate(d: string): number { const t = Date.parse(d); return isNaN(t) ? 0 : t; }
   function deriveItems(): GmailListItem[] {
     if (!gmailItems) return [];
     let items = gmailItems.slice();
+
+    if (groupBy !== 'none') {
+      const map = new Map<string, GmailListItem[]>();
+      for (const m of items) {
+        const key = groupBy === 'thread' && m.threadId ? m.threadId : normalizeSubject(m.subject);
+        const arr = map.get(key) || [];
+        arr.push(m);
+        map.set(key, arr);
+      }
+      const reps: GmailListItem[] = [];
+      // reset counts
+      for (const k in groupCounts) delete groupCounts[k];
+      currentGroupMap = {};
+      for (const [, arr] of map) {
+        // choose representative by highest score if exists, else first
+        let rep = arr[0];
+        let best = results[rep.id]?.score ?? 0;
+        for (const m of arr) {
+          const sc = results[m.id]?.score ?? 0;
+          if (sc > best) {
+            best = sc;
+            rep = m;
+          }
+        }
+        reps.push(rep);
+        groupCounts[rep.id] = arr.length;
+        currentGroupMap[rep.id] = arr;
+      }
+      // Sort groups by latest message date in each group (desc), Gmail-like
+      items = reps.sort((a, b) => {
+        const ga = currentGroupMap[a.id] || [a];
+        const gb = currentGroupMap[b.id] || [b];
+        const la = ga.reduce((mx, m) => Math.max(mx, parseDate(m.date)), 0);
+        const lb = gb.reduce((mx, m) => Math.max(mx, parseDate(m.date)), 0);
+        return lb - la;
+      });
+    }
     if (categoryFilter !== 'All') {
       items = items.filter((it) => results[it.id]?.category === categoryFilter);
     }
-    return items.sort((a, b) => (results[b.id]?.score ?? 0) - (results[a.id]?.score ?? 0));
+    // When grouped, keep date sort above. When not grouped, sort by score desc as before.
+    if (groupBy === 'none') {
+      return items.sort((a, b) => (results[b.id]?.score ?? 0) - (results[a.id]?.score ?? 0));
+    }
+    return items;
+  }
+
+  function groupParticipants(repId: string): string {
+    const arr = currentGroupMap[repId] || [];
+    const names = new Set<string>();
+    for (const m of arr) {
+      const from = m.from || '';
+      const name = from.split('<')[0].trim() || from;
+      if (name) names.add(name.replace(/"/g, ''));
+    }
+    return Array.from(names).slice(0, 3).join(', ') + (names.size > 3 ? '…' : '');
+  }
+
+  function latestInGroup(repId: string): GmailListItem | null {
+    const arr = currentGroupMap[repId] || [];
+    if (arr.length === 0) return null;
+    return arr.reduce((best, m) => (parseDate(m.date) > parseDate(best.date) ? m : best), arr[0]);
   }
 
   async function smartCleanInbox(emails: GmailListItem[]) {
@@ -178,6 +260,35 @@
       </select>
     </div>
     <div class="flex items-center gap-2">
+      <label class="text-sm text-neutral-300">Filter:</label>
+      <select
+        class="bg-neutral-900 border border-neutral-700 rounded px-2 py-1 text-sm"
+        bind:value={categoryFilter}
+        disabled={loading}
+        aria-label="Filter messages"
+      >
+        <option value="All">All</option>
+        <option value="Important">Important</option>
+        <option value="Low Priority">Low Priority</option>
+        <option value="Promotional">Promotional</option>
+        <option value="Spam">Spam</option>
+        <option value="Subscription">Subscription</option>
+      </select>
+    </div>
+    <div class="flex items-center gap-2">
+      <label class="text-sm text-neutral-300">Group by:</label>
+      <select
+        class="bg-neutral-900 border border-neutral-700 rounded px-2 py-1 text-sm"
+        bind:value={groupBy}
+        disabled={loading}
+        aria-label="Group messages"
+      >
+        <option value="none">None</option>
+        <option value="subject">Subject</option>
+        <option value="thread">Thread</option>
+      </select>
+    </div>
+    <div class="flex items-center gap-2">
       <label class="text-sm text-neutral-300">Default Tone:</label>
       <select
         class="bg-neutral-900 border border-neutral-700 rounded px-2 py-1 text-sm"
@@ -208,8 +319,19 @@
         <ul class="space-y-2">
           {#each deriveItems() as m, i}
             <li class="p-3 rounded-md border border-neutral-700">
-              <div class="flex flex-wrap items-center gap-2">
-                <div class="font-semibold flex-1 min-w-48">{m.subject}</div>
+              <!-- Header row: Gmail-like conversation summary -->
+              <div class="flex items-center gap-2 cursor-pointer" on:click={() => (collapsed[m.id + '_thread'] = !(collapsed[m.id + '_thread'] ?? true))}>
+                <div class="flex-1 min-w-48">
+                  <div class="font-semibold">{m.subject}</div>
+                  {#if groupBy !== 'none' && groupCounts[m.id] > 1}
+                    <div class="text-xs text-neutral-400 truncate">
+                      {groupParticipants(m.id)} — {latestInGroup(m.id)?.snippet}
+                    </div>
+                  {/if}
+                </div>
+                {#if groupBy !== 'none' && groupCounts[m.id] > 1}
+                  <span class="text-xs rounded px-2 py-1 border border-neutral-600 text-neutral-300">x{groupCounts[m.id]}</span>
+                {/if}
                 {#if results[m.id]?.category}
                   <span class="text-xs rounded px-2 py-1 text-white"
                     class:bg-emerald-600={results[m.id]?.category === 'Important'}
@@ -220,61 +342,118 @@
                   >{results[m.id]?.category}</span>
                 {/if}
                 <span class="text-xs rounded px-2 py-1 border border-neutral-600 text-neutral-300">Score: {results[m.id]?.score ?? 0}</span>
-                <div class="flex items-center gap-2">
-                  <label class="text-sm text-neutral-300">Tone:</label>
+                <span class="text-xs text-neutral-400 ml-2">{(latestInGroup(m.id)?.date) || m.date}</span>
+              </div>
+
+              <!-- Expanded thread content when grouped -->
+              {#if groupBy !== 'none' && groupCounts[m.id] > 1}
+                {#if !(collapsed[m.id + '_thread'] ?? true)}
+                  <ul class="mt-2 space-y-2">
+                    {#each (currentGroupMap[m.id] || []) as cm}
+                      <li class="p-2 border border-neutral-800 rounded">
+                        <div class="flex items-center gap-2">
+                          <div class="flex-1 min-w-48">
+                            <div class="text-sm text-neutral-300 truncate">{cm.from}</div>
+                            <div class="text-xs text-neutral-400 truncate">{cm.subject}</div>
+                            <div class="text-xs text-neutral-500">{cm.date}</div>
+                          </div>
+                          <span class="text-xs rounded px-2 py-0.5 border border-neutral-600 text-neutral-300">{results[cm.id]?.score ?? 0}</span>
+                          <select
+                            class="bg-neutral-900 border border-neutral-700 rounded px-2 py-1 text-xs"
+                            bind:value={tones[cm.id]}
+                            aria-label="Tone"
+                          >
+                            <option value="Professional">Professional</option>
+                            <option value="Friendly">Friendly</option>
+                            <option value="Brief">Brief</option>
+                            <option value="Empathetic">Empathetic</option>
+                          </select>
+                          <button
+                            class="bg-neutral-800 text-white border border-neutral-600 px-2 py-1 rounded text-xs hover:enabled:bg-neutral-700"
+                            on:click={() => regenerateGmail(cm)}
+                            disabled={regenerating[cm.id] || loading}
+                          >Triage</button>
+                          <button
+                            class="bg-neutral-800 text-white border border-neutral-600 px-2 py-1 rounded text-xs hover:enabled:bg-neutral-700"
+                            on:click={() => (collapsed[cm.id] = !collapsed[cm.id])}
+                          >{collapsed[cm.id] ? 'Expand' : 'Collapse'}</button>
+                        </div>
+                        {#if cm.unsubscribeUrl}
+                          <div class="mt-2">
+                            <a class="inline-block bg-red-700 hover:bg-red-600 text-white text-xs px-2 py-1 rounded" href={cm.unsubscribeUrl} target="_blank" rel="noopener noreferrer">Unsubscribe</a>
+                          </div>
+                        {/if}
+                        {#if !collapsed[cm.id]}
+                          <div class="mt-2 space-y-1">
+                            <p class="flex items-center gap-2 text-sm">
+                              <strong>Summary:</strong>
+                              <span>{results[cm.id]?.summary ?? ''}</span>
+                              {#if results[cm.id]?.summary === 'Thinking...'}
+                                <svg class="animate-spin h-4 w-4 text-neutral-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                  <path class="opacity-75" fill="currentColor" d="M4 12a 8 8 0 018-8v4a4 4 0 00-4 4H4z"></path>
+                                </svg>
+                              {/if}
+                            </p>
+                            {#if i < 3}
+                              <p class="font-semibold text-sm">✍️ Draft:</p>
+                              <pre class="bg-neutral-800 p-2 rounded-md whitespace-pre-wrap overflow-x-auto text-xs">{results[cm.id]?.draft ?? ''}</pre>
+                            {/if}
+                          </div>
+                        {/if}
+                      </li>
+                    {/each}
+                  </ul>
+                {/if}
+              {:else}
+                <!-- Single-message (not grouped) content -->
+                <div class="text-sm text-neutral-300">From: {m.from}</div>
+                <div class="text-xs text-neutral-400">{m.date}</div>
+                <div class="text-sm text-neutral-400 mt-1">{m.snippet}</div>
+                {#if m.unsubscribeUrl}
+                  <div class="mt-2">
+                    <a class="inline-block bg-red-700 hover:bg-red-600 text-white text-xs px-2 py-1 rounded" href={m.unsubscribeUrl} target="_blank" rel="noopener noreferrer">Unsubscribe</a>
+                  </div>
+                {/if}
+                <div class="mt-2 flex items-center gap-2">
                   <select
                     class="bg-neutral-900 border border-neutral-700 rounded px-2 py-1 text-sm"
-                    value={tones[m.id] ?? defaultTone}
-                    on:change={(e) => { tones[m.id] = (e.target as HTMLSelectElement).value as Tone; regenerateGmail(m); }}
-                    disabled={regenerating[m.id] || loading}
+                    bind:value={tones[m.id]}
+                    aria-label="Tone"
                   >
                     <option value="Professional">Professional</option>
                     <option value="Friendly">Friendly</option>
                     <option value="Brief">Brief</option>
                     <option value="Empathetic">Empathetic</option>
                   </select>
+                  <button
+                    class="bg-neutral-800 text-white border border-neutral-600 px-2 py-1 rounded text-sm hover:enabled:bg-neutral-700"
+                    on:click={() => regenerateGmail(m)}
+                    disabled={regenerating[m.id] || loading}
+                  >Triage</button>
+                  <button
+                    class="ml-auto bg-neutral-800 text-white border border-neutral-600 px-2 py-1 rounded text-sm hover:enabled:bg-neutral-700"
+                    on:click={() => (collapsed[m.id] = !collapsed[m.id])}
+                  >{collapsed[m.id] ? 'Expand' : 'Collapse'}</button>
                 </div>
-                <button
-                  class="bg-neutral-800 text-white border border-neutral-600 px-2 py-1 rounded text-sm hover:enabled:bg-neutral-700"
-                  on:click={() => regenerateGmail(m)}
-                  disabled={regenerating[m.id] || loading}
-                  aria-label="Triage this email"
-                >Triage</button>
-                <button
-                  class="ml-auto bg-neutral-800 text-white border border-neutral-600 px-2 py-1 rounded text-sm hover:enabled:bg-neutral-700"
-                  on:click={() => (collapsed[m.id] = !collapsed[m.id])}
-                >{collapsed[m.id] ? 'Expand' : 'Collapse'}</button>
-                {#if regenerating[m.id]}
-                  <span class="text-xs text-neutral-400">Regenerating…</span>
-                {/if}
-              </div>
-
-              <div class="text-sm text-neutral-300">From: {m.from}</div>
-              <div class="text-xs text-neutral-400">{m.date}</div>
-              <div class="text-sm text-neutral-400 mt-1">{m.snippet}</div>
-              {#if m.unsubscribeUrl}
-                <div class="mt-2">
-                  <a class="inline-block bg-red-700 hover:bg-red-600 text-white text-xs px-2 py-1 rounded" href={m.unsubscribeUrl} target="_blank" rel="noopener noreferrer">Unsubscribe</a>
-                </div>
-              {/if}
-
-              {#if !collapsed[m.id]}
-                <div class="mt-3 space-y-2">
-                  <p class="flex items-center gap-2">
-                    <strong>Summary:</strong>
-                    <span>{results[m.id]?.summary ?? ''}</span>
-                    {#if results[m.id]?.summary === 'Thinking...'}
-                      <svg class="animate-spin h-4 w-4 text-neutral-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" aria-hidden="true">
-                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path>
-                      </svg>
+                {#if !collapsed[m.id]}
+                  <div class="mt-3 space-y-2">
+                    <p class="flex items-center gap-2">
+                      <strong>Summary:</strong>
+                      <span>{results[m.id]?.summary ?? ''}</span>
+                      {#if results[m.id]?.summary === 'Thinking...'}
+                        <svg class="animate-spin h-4 w-4 text-neutral-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path>
+                        </svg>
+                      {/if}
+                    </p>
+                    {#if i < 3}
+                      <p class="font-semibold">✍️ Draft:</p>
+                      <pre class="bg-neutral-800 p-3 rounded-md whitespace-pre-wrap overflow-x-auto">{results[m.id]?.draft ?? ''}</pre>
                     {/if}
-                  </p>
-                  {#if i < 3}
-                    <p class="font-semibold">✍️ Draft:</p>
-                    <pre class="bg-neutral-800 p-3 rounded-md whitespace-pre-wrap overflow-x-auto">{results[m.id]?.draft ?? ''}</pre>
-                  {/if}
-                </div>
+                  </div>
+                {/if}
               {/if}
             </li>
           {/each}
