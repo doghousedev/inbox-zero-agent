@@ -133,6 +133,20 @@ export const GET: RequestHandler = async (event) => {
       });
     }
 
+    // Parse List-Unsubscribe header and prefer http/https link; fallback to mailto
+    function extractUnsubscribeUrl(raw: string | undefined): string | undefined {
+      if (!raw) return undefined;
+      const parts = raw.split(',').map((s) => s.trim());
+      let mailtoUrl: string | undefined;
+      for (const p of parts) {
+        const m = p.match(/<([^>]+)>/);
+        const val = (m ? m[1] : p).trim();
+        if (/^https?:\/\//i.test(val)) return val;
+        if (/^mailto:/i.test(val) && !mailtoUrl) mailtoUrl = val;
+      }
+      return mailtoUrl;
+    }
+
     // Decode RFC 2047 encoded-words in headers like =?UTF-8?B?...?= or =?UTF-8?Q?...?=
     function decodeRfc2047(input: string | undefined): string {
       if (!input) return '';
@@ -169,6 +183,7 @@ export const GET: RequestHandler = async (event) => {
         const headers: Record<string, string> = {};
         for (const h of m.payload?.headers ?? []) headers[h.name] = h.value;
         const bodyText = decodeHtmlEntities(extractPlainText(m.payload));
+        const unsubscribeUrl = extractUnsubscribeUrl(headers['List-Unsubscribe']);
         return {
           id: m.id,
           threadId: m.threadId,
@@ -176,7 +191,8 @@ export const GET: RequestHandler = async (event) => {
           subject: decodeHtmlEntities(decodeRfc2047(headers['Subject'] || '')),
           from: decodeHtmlEntities(decodeRfc2047(headers['From'] || '')),
           date: headers['Date'] || '',
-          bodyText
+          bodyText,
+          unsubscribeUrl
         };
       })
     );

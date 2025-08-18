@@ -1,7 +1,8 @@
 type GPTParsedDraft = {
-	summary: string;
-	score: number;
-	draft: string;
+  summary: string;
+  score: number;
+  category: 'Important' | 'Low Priority' | 'Promotional' | 'Spam' | 'Subscription';
+  draft: string;
 };
 
 export type TriageModel = {
@@ -35,8 +36,9 @@ Body: ${email.body}
 
 Tasks:
 1. Summarize the email in one sentence.
-2. Score its importance from 1 to 10.
-3. Write a reply in a ${tone} tone.
+2. Score its importance from 1 to 10 (integer).
+3. Classify the email into one Category: Important | Low Priority | Promotional | Spam | Subscription.
+4. Write a reply in a ${tone} tone.
 
 Tone guidance:
 - Professional: formal, clear, courteous.
@@ -44,10 +46,13 @@ Tone guidance:
 - Brief: very concise, minimum words, keep essentials only.
 - Empathetic: validating, supportive, considerate.
 
-Return the output in this format:
-Summary: ...
-Score: ...
-Draft: ...
+Return ONLY a fenced yaml block with exactly these keys:
+\`\`\`yaml
+Summary: <one-sentence summary>
+Score: <1-10 integer>
+Category: <Important | Low Priority | Promotional | Spam | Subscription>
+Draft: <your reply>
+\`\`\`
 `;
 
 	const res = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -85,15 +90,61 @@ Draft: ...
 
 	const text: string = data?.choices?.[0]?.message?.content ?? '';
 
-	const summaryMatch = text.match(/Summary:\s*(.+)/i);
-	const scoreMatch = text.match(/Score:\s*(\d+)/i);
-	const draftMatch = text.match(/Draft:\s*([\s\S]*)/i);
+  // Try to extract fenced YAML block
+  const fenceMatch = text.match(/```\s*yaml\s*\n([\s\S]*?)\n```/i) || text.match(/```\s*\n([\s\S]*?)\n```/i);
+  let summary = '';
+  let score = 0;
+  let category: GPTParsedDraft['category'] = 'Low Priority';
+  let draft = '';
 
-	return {
-		summary: summaryMatch?.[1]?.trim() ?? '[No summary]',
-		score: parseInt(scoreMatch?.[1] ?? '0'),
-		draft: draftMatch?.[1]?.trim() ?? '[No draft]'
-	};
+  const parseLooseYaml = (yaml: string) => {
+    const lines = yaml.split(/\r?\n/);
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const m = line.match(/^([A-Za-z]+):\s*(.*)$/);
+      if (!m) continue;
+      const key = m[1].toLowerCase();
+      const value = m[2] ?? '';
+      if (key === 'summary') {
+        summary = value.trim();
+      } else if (key === 'score') {
+        const num = parseInt(value.trim(), 10);
+        if (!Number.isNaN(num)) score = num;
+      } else if (key === 'category') {
+        const v = value.trim();
+        const allowed = ['Important','Low Priority','Promotional','Spam','Subscription'] as const;
+        const match = allowed.find((a) => a.toLowerCase() === v.toLowerCase());
+        if (match) category = match;
+      } else if (key === 'draft') {
+        // Draft may span multiple lines; capture remainder of current line and following lines
+        const rest = [value, ...lines.slice(i + 1)].join('\n');
+        draft = rest.trim();
+        break;
+      }
+    }
+  };
+
+  if (fenceMatch) {
+    parseLooseYaml(fenceMatch[1]);
+  } else {
+    // Fallback regex parsing
+    const summaryMatch = text.match(/Summary:\s*(.+)/i);
+    const scoreMatch = text.match(/Score:\s*(\d+)/i);
+    const categoryMatch = text.match(/Category:\s*(.+)/i);
+    const draftMatch = text.match(/Draft:\s*([\s\S]*)/i);
+    summary = summaryMatch?.[1]?.trim() ?? '';
+    score = parseInt(scoreMatch?.[1] ?? '0', 10) || 0;
+    const v = categoryMatch?.[1]?.trim() ?? '';
+    const allowed = ['Important','Low Priority','Promotional','Spam','Subscription'] as const;
+    const match = allowed.find((a) => a.toLowerCase() === v.toLowerCase());
+    category = match || 'Low Priority';
+    draft = draftMatch?.[1]?.trim() ?? '';
+  }
+
+  if (!summary) summary = '[No summary]';
+  if (!draft) draft = '[No draft]';
+
+  return { summary, score, category, draft };
 }
 
 export async function generateEmailDraftMulti(
@@ -113,7 +164,7 @@ export async function generateEmailDraftMulti(
       const msg = reason instanceof Error ? reason.message : String(reason);
       // We cannot reliably know which model failed here; skip adding or tag generically
       // For visibility, we add a placeholder under a synthetic key
-      out['error'] = { summary: '[Error] Failed to generate', score: 0, draft: msg };
+      out['error'] = { summary: '[Error] Failed to generate', score: 0, category: 'Low Priority', draft: msg };
     }
   }
   return out;

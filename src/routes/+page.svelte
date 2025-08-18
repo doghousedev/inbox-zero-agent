@@ -5,6 +5,7 @@
   type EmailDraft = {
     summary: string;
     score: number;
+    category: 'Important' | 'Low Priority' | 'Promotional' | 'Spam' | 'Subscription';
     draft: string;
   };
 
@@ -20,10 +21,11 @@
   let selectedModel: string = (import.meta.env.VITE_OPENAI_MODEL as string) || 'gpt-5-nano';
 
   // Auth/session data from server
-  type GmailListItem = { id: string; subject: string; from: string; date: string; snippet: string; bodyText?: string };
+  type GmailListItem = { id: string; subject: string; from: string; date: string; snippet: string; bodyText?: string; unsubscribeUrl?: string };
   let signedInEmail: string | null = null;
   let gmailItems: Array<GmailListItem>|null = null;
   let gmailError: string | null = null;
+  let categoryFilter: 'All' | 'Important' | 'Low Priority' | 'Promotional' | 'Spam' | 'Subscription' = 'All';
 
   async function fetchProfile() {
     try {
@@ -39,7 +41,7 @@
     regenerating[id] = true;
     const selectedTone: Tone = tones[id] ?? defaultTone;
     try {
-      results[id] = { summary: 'Thinking...', score: 0, draft: '' };
+      results[id] = { summary: 'Thinking...', score: 0, category: 'Low Priority', draft: '' };
       const parsed = await generateEmailDraft(
         { subject: item.subject, body: item.bodyText || item.snippet },
         selectedTone,
@@ -48,7 +50,7 @@
       results[id] = parsed;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      results[id] = { summary: '[Error] Failed to generate', score: 0, draft: message };
+      results[id] = { summary: '[Error] Failed to generate', score: 0, category: 'Low Priority', draft: message };
     }
     regenerating[id] = false;
   }
@@ -58,7 +60,7 @@
     loading = true;
     results = {};
     for (const item of gmailItems) {
-      results[item.id] = { summary: 'Thinking...', score: 0, draft: '' };
+      results[item.id] = { summary: 'Thinking...', score: 0, category: 'Low Priority', draft: '' };
       const selectedTone: Tone = tones[item.id] ?? defaultTone;
       try {
         const parsed = await generateEmailDraft(
@@ -69,9 +71,11 @@
         results[item.id] = parsed;
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        results[item.id] = { summary: '[Error] Failed to generate', score: 0, draft: message };
+        results[item.id] = { summary: '[Error] Failed to generate', score: 0, category: 'Low Priority', draft: message };
       }
     }
+    // Auto-clean after triage
+    try { await smartCleanInbox(gmailItems); } catch {}
     loading = false;
   }
 
@@ -89,7 +93,8 @@
         from: m.from || '',
         date: m.date || '',
         snippet: m.snippet || '',
-        bodyText: m.bodyText || ''
+        bodyText: m.bodyText || '',
+        unsubscribeUrl: m.unsubscribeUrl || undefined
       }));
       // Initialize collapsed defaults for Gmail items (tone falls back to defaultTone)
       for (const m of gmailItems) {
@@ -105,7 +110,33 @@
     await fetchMessages();
   });
 
-  // Mock triage removed; triage now runs on real Gmail items only
+  // Derived view: filter by category (if results exist), then sort by score desc
+  function deriveItems(): GmailListItem[] {
+    if (!gmailItems) return [];
+    let items = gmailItems.slice();
+    if (categoryFilter !== 'All') {
+      items = items.filter((it) => results[it.id]?.category === categoryFilter);
+    }
+    return items.sort((a, b) => (results[b.id]?.score ?? 0) - (results[a.id]?.score ?? 0));
+  }
+
+  async function smartCleanInbox(emails: GmailListItem[]) {
+    const toTrash = emails.filter((e) => {
+      const r = results[e.id];
+      if (!r) return false;
+      const isJunk = r.category === 'Spam' || r.category === 'Promotional';
+      return isJunk && (r.score ?? 0) < 3;
+    });
+    for (const e of toTrash) {
+      try {
+        await fetch('/api/gmail/modify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ messageId: e.id, removeLabelIds: ['INBOX'], addLabelIds: ['TRASH'] })
+        });
+      } catch {}
+    }
+  }
 </script>
 
 <main class="p-8 max-w-4xl mx-auto">
@@ -175,10 +206,19 @@
           >{loading ? 'Working...' : 'Triage All (Gmail)'}</button>
         </div>
         <ul class="space-y-2">
-          {#each gmailItems as m, i}
+          {#each deriveItems() as m, i}
             <li class="p-3 rounded-md border border-neutral-700">
               <div class="flex flex-wrap items-center gap-2">
                 <div class="font-semibold flex-1 min-w-48">{m.subject}</div>
+                {#if results[m.id]?.category}
+                  <span class="text-xs rounded px-2 py-1 text-white"
+                    class:bg-emerald-600={results[m.id]?.category === 'Important'}
+                    class:bg-slate-600={results[m.id]?.category === 'Low Priority'}
+                    class:bg-indigo-600={results[m.id]?.category === 'Promotional'}
+                    class:bg-rose-600={results[m.id]?.category === 'Spam'}
+                    class:bg-amber-600={results[m.id]?.category === 'Subscription'}
+                  >{results[m.id]?.category}</span>
+                {/if}
                 <span class="text-xs rounded px-2 py-1 border border-neutral-600 text-neutral-300">Score: {results[m.id]?.score ?? 0}</span>
                 <div class="flex items-center gap-2">
                   <label class="text-sm text-neutral-300">Tone:</label>
@@ -212,6 +252,11 @@
               <div class="text-sm text-neutral-300">From: {m.from}</div>
               <div class="text-xs text-neutral-400">{m.date}</div>
               <div class="text-sm text-neutral-400 mt-1">{m.snippet}</div>
+              {#if m.unsubscribeUrl}
+                <div class="mt-2">
+                  <a class="inline-block bg-red-700 hover:bg-red-600 text-white text-xs px-2 py-1 rounded" href={m.unsubscribeUrl} target="_blank" rel="noopener noreferrer">Unsubscribe</a>
+                </div>
+              {/if}
 
               {#if !collapsed[m.id]}
                 <div class="mt-3 space-y-2">
