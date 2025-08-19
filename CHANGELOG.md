@@ -29,6 +29,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - Group by Thread (uses Gmail `threadId`)
     - Shows a count badge on grouped cards and chooses representative by highest triage score
   - Home page now shows signed-in email and lists latest Gmail messages; includes Logout button.
+  - Unified list row headers for both grouped and single emails; a chevron toggles expansion everywhere, and singles display header snippets.
+  - Visual engaged indicator for expanded groups (rotating chevron, highlight, and "Open" badge).
+  - Spam action button next to Unsubscribe. Mark-for-deletion tracking and post-triage confirmation flow to delete marked messages.
 
 ### Changed
 - Global "Triage My Inbox" button kept for batch processing; UI updated to work with the selected Model.
@@ -37,8 +40,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
  - Removed mock inbox usage from `src/routes/+page.svelte`; UI now exclusively uses live Gmail data (`/api/gmail/messages`).
  - Decoded HTML entities and RFC 2047 headers in `src/routes/api/gmail/messages/+server.ts` so Subject/From/snippets/body render correctly (e.g., apostrophes, accented characters).
  - Added global Default Tone selector in `src/routes/+page.svelte`; triage now uses per-message override or falls back to the global default.
-- Inbox view can be filtered by Category and is sorted by triage Score (desc). Category badges are shown per email. After triage, low-score Spam/Promotional emails are auto-moved to Trash via the new modify API.
- - Messages can now be displayed as groups (Subject/Thread) while keeping category filters and score-based sorting applied to group representatives.
+- Inbox view can be filtered by Category. Ungrouped view now sorts by Date (desc) so newest is first. Grouped view sorts by latest message in each group (desc);
+  category badges are shown per email.
+- Default grouping now starts as "Thread" unless a prior preference exists in localStorage.
+- Grouped headers use a larger subject font size for better differentiation.
 
 ### Notes
 - Ensure `VITE_OPENAI_KEY` is set; optionally configure default model via `VITE_OPENAI_MODEL`. Temperature can be set via `VITE_OPENAI_TEMPERATURE` (omitted for some `gpt-5-*` variants).

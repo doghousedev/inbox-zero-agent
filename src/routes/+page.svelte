@@ -17,6 +17,7 @@
   let loading = false;
   let regenerating: Record<string, boolean> = {};
   let collapsed: Record<string, boolean> = {};
+  let markedForDeletion: Record<string, boolean> = {};
   // Using real Gmail items only
   let selectedModel: string = (import.meta.env.VITE_OPENAI_MODEL as string) || 'gpt-5-nano';
 
@@ -58,10 +59,45 @@
     regenerating[id] = false;
   }
 
+  function shouldMarkForDeletion(item: GmailListItem): boolean {
+    const r = results[item.id];
+    if (!r) return false;
+    const isJunk = r.category === 'Spam' || r.category === 'Promotional';
+    return isJunk && (r.score ?? 0) < 3;
+  }
+
+  async function deleteMarked() {
+    const ids = Object.entries(markedForDeletion).filter(([, v]) => v).map(([k]) => k);
+    for (const id of ids) {
+      try {
+        await fetch('/api/gmail/modify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ messageId: id, removeLabelIds: ['INBOX'], addLabelIds: ['TRASH'] })
+        });
+      } catch {}
+    }
+  }
+
+  async function markAsSpam(messageId: string) {
+    try {
+      await fetch('/api/gmail/modify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messageId, removeLabelIds: ['INBOX'], addLabelIds: ['SPAM'] })
+      });
+      // reflect locally if present
+      const r = results[messageId];
+      if (r) results[messageId] = { ...r, category: 'Spam' };
+      markedForDeletion[messageId] = true;
+    } catch {}
+  }
+
   async function runTriageGmail() {
     if (!gmailItems || gmailItems.length === 0) return;
     loading = true;
     results = {};
+    markedForDeletion = {};
     for (const item of gmailItems) {
       results[item.id] = { summary: 'Thinking...', score: 0, category: 'Low Priority', draft: '' };
       const selectedTone: Tone = tones[item.id] ?? defaultTone;
@@ -76,9 +112,16 @@
         const message = err instanceof Error ? err.message : String(err);
         results[item.id] = { summary: '[Error] Failed to generate', score: 0, category: 'Low Priority', draft: message };
       }
+      // Mark potential junk for deletion (user will confirm)
+      markedForDeletion[item.id] = shouldMarkForDeletion(item);
     }
-    // Auto-clean after triage
-    try { await smartCleanInbox(gmailItems); } catch {}
+    // Ask user to delete marked emails
+    const toDelete = Object.values(markedForDeletion).filter(Boolean).length;
+    if (toDelete > 0) {
+      if (confirm(`Delete ${toDelete} marked emails now?`)) {
+        try { await deleteMarked(); } catch {}
+      }
+    }
     loading = false;
   }
 
@@ -110,11 +153,14 @@
   }
 
   onMount(async () => {
-    // restore groupBy preference
+    // restore groupBy preference or default to 'thread'
     try {
       const gb = localStorage.getItem('groupBy');
       if (gb === 'none' || gb === 'subject' || gb === 'thread' || gb === 'sender') groupBy = gb as any;
-    } catch {}
+      else groupBy = 'thread';
+    } catch {
+      groupBy = 'thread';
+    }
     await fetchProfile();
     await fetchMessages();
   });
@@ -141,7 +187,7 @@
     return at !== -1 ? email.slice(at + 1) : email;
   }
 
-  // Derived view: optionally group, filter by category, then sort by score desc
+  // Derived view: optionally group, filter by category, then sort by date desc when ungrouped
   const groupCounts: Record<string, number> = {};
   function parseDate(d: string): number { const t = Date.parse(d); return isNaN(t) ? 0 : t; }
   function deriveItems(): GmailListItem[] {
@@ -190,9 +236,9 @@
     if (categoryFilter !== 'All') {
       items = items.filter((it) => results[it.id]?.category === categoryFilter);
     }
-    // When grouped, keep date sort above. When not grouped, sort by score desc as before.
+    // When grouped, keep date sort above. When not grouped, sort by date desc (new behavior)
     if (groupBy === 'none') {
-      return items.sort((a, b) => (results[b.id]?.score ?? 0) - (results[a.id]?.score ?? 0));
+      return items.sort((a, b) => parseDate(b.date) - parseDate(a.date));
     }
     return items;
   }
@@ -200,12 +246,9 @@
   let derivedItems: GmailListItem[] = [];
   // Make dependencies explicit so Svelte surely tracks them
   $: {
-    // Short-circuit: if no grouping and filter is All, just show gmailItems
-    if (gmailItems && groupBy === 'none' && categoryFilter === 'All') {
-      derivedItems = gmailItems.slice();
-    } else {
-      derivedItems = deriveItems();
-    }
+    // Reference all inputs so Svelte picks up reactivity
+    const _deps = { gmailItems, results, groupBy, categoryFilter };
+    derivedItems = deriveItems();
   }
 
   function groupParticipants(repId: string): string {
@@ -370,7 +413,7 @@
                   <path fill-rule="evenodd" d="M7.21 14.77a.75.75 0 0 1-1.06-1.06L10.06 9.8 6.15 5.89a.75.75 0 1 1 1.06-1.06l4.5 4.5a.75.75 0 0 1 0 1.06l-4.5 4.5Z" clip-rule="evenodd" />
                 </svg>
                 <div class="flex-1 min-w-48">
-                  <div class="font-semibold">{m.subject}</div>
+                  <div class="font-semibold" class:text-lg={groupBy !== 'none' && groupCounts[m.id] > 1}>{m.subject}</div>
                   {#if groupBy !== 'none' && groupCounts[m.id] > 1}
                     <div class="text-xs text-neutral-400 truncate">
                       {groupParticipants(m.id)} — {latestInGroup(m.id)?.snippet}
@@ -410,6 +453,10 @@
                             <div class="text-xs text-neutral-400 truncate">{cm.subject}</div>
                             <div class="text-xs text-neutral-500">{cm.date}</div>
                           </div>
+                          {#if cm.unsubscribeUrl}
+                            <a class="inline-block bg-red-700 hover:bg-red-600 text-white text-xs px-2 py-1 rounded" href={cm.unsubscribeUrl} target="_blank" rel="noopener noreferrer">Unsubscribe</a>
+                          {/if}
+                          <button class="bg-rose-700 hover:bg-rose-600 text-white text-xs px-2 py-1 rounded" on:click={() => markAsSpam(cm.id)}>Spam</button>
                           <span class="text-xs rounded px-2 py-0.5 border border-neutral-600 text-neutral-300">{results[cm.id]?.score ?? 0}</span>
                           <select
                             class="bg-neutral-900 border border-neutral-700 rounded px-2 py-1 text-xs"
@@ -431,11 +478,7 @@
                             on:click={() => (collapsed[cm.id] = !collapsed[cm.id])}
                           >{collapsed[cm.id] ? 'Expand' : 'Collapse'}</button>
                         </div>
-                        {#if cm.unsubscribeUrl}
-                          <div class="mt-2">
-                            <a class="inline-block bg-red-700 hover:bg-red-600 text-white text-xs px-2 py-1 rounded" href={cm.unsubscribeUrl} target="_blank" rel="noopener noreferrer">Unsubscribe</a>
-                          </div>
-                        {/if}
+                        
                         {#if !collapsed[cm.id]}
                           <div class="mt-2 space-y-1">
                             <p class="flex items-center gap-2 text-sm">
@@ -473,12 +516,12 @@
                 <div class="text-sm text-neutral-300">From: {m.from}</div>
                 <div class="text-xs text-neutral-400">{m.date}</div>
                 <div class="text-sm text-neutral-400 mt-1">{m.snippet}</div>
-                {#if m.unsubscribeUrl}
-                  <div class="mt-2">
-                    <a class="inline-block bg-red-700 hover:bg-red-600 text-white text-xs px-2 py-1 rounded" href={m.unsubscribeUrl} target="_blank" rel="noopener noreferrer">Unsubscribe</a>
-                  </div>
-                {/if}
                 <div class="mt-2 flex items-center gap-2">
+                  {#if m.unsubscribeUrl}
+                    <a class="inline-block bg-red-700 hover:bg-red-600 text-white text-xs px-2 py-1 rounded" href={m.unsubscribeUrl} target="_blank" rel="noopener noreferrer">Unsubscribe</a>
+                  {/if}
+                  <button class="bg-rose-700 hover:bg-rose-600 text-white text-xs px-2 py-1 rounded" on:click={() => markAsSpam(m.id)}>Spam</button>
+                  <span class="text-xs rounded px-2 py-0.5 border border-neutral-600 text-neutral-300">{results[m.id]?.score ?? 0}</span>
                   <select
                     class="bg-neutral-900 border border-neutral-700 rounded px-2 py-1 text-sm"
                     bind:value={tones[m.id]}
